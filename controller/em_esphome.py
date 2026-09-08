@@ -1935,10 +1935,11 @@ class EchoMuseSatellite(SatelliteServerProtocol):
             self._turn_end_reason = reason
         self._tts_event.set()  # unblock any waiting coroutine
 
-    def abort_ha_run(self) -> None:
+    def abort_ha_run(self, reason: str = "barged") -> None:
         """
         Abort HA's pipeline and arm the run barrier, without touching local
-        turn state.
+        turn state. ``reason`` labels why playback ended; barge-in remains the
+        default, while the bare kill word passes ``stopped``.
 
         Split out of cancel_turn because a barge during PLAYBACK must not mark
         the turn cancelled — the response was delivered and the trace outcome
@@ -1960,7 +1961,7 @@ class EchoMuseSatellite(SatelliteServerProtocol):
         # so it covered the thinking barge and missed the playback one it was
         # actually written for.
         if self._turn_end_reason is None:
-            self._turn_end_reason = "barged"
+            self._turn_end_reason = reason
         self.end_ha_run()
 
     def end_ha_run(self) -> None:
@@ -2922,9 +2923,10 @@ def cancel_voice_turn(device_id: str, abort_ha: bool = False,
     satellite.cancel_turn(abort_ha=abort_ha, reason=reason)
 
 
-def abort_ha_run(device_id: str) -> None:
+def abort_ha_run(device_id: str, reason: str = "barged") -> None:
     """
-    Abort HA's in-flight pipeline without cancelling the local turn.
+    Abort HA's in-flight pipeline without cancelling the local turn. ``reason``
+    is persisted as the playback end cause.
 
     For a barge during playback: the response was delivered, so the turn is
     not "cancelled", but an interrupting turn is about to start on the same
@@ -2937,7 +2939,7 @@ def abort_ha_run(device_id: str) -> None:
     satellite = server.get_satellite()
     if satellite is None:
         return
-    satellite.abort_ha_run()
+    satellite.abort_ha_run(reason=reason)
 
 
 async def push_media_state(device_id: str, state: str) -> None:

@@ -111,6 +111,14 @@ def test_the_playback_barge_still_records_without_a_cancel():
         "abort_ha_run must not mark the turn cancelled — see its docstring"
 
 
+def test_playback_abort_reason_survives_the_module_forwarder():
+    """Bare stop must persist as stopped instead of being mislabeled barged."""
+    src = (CONTROLLER / "em_esphome.py").read_text()
+    fwd = src[src.index("def abort_ha_run(device_id"):]
+    fwd = fwd[:fwd.index("\n\n\n")]
+    assert "reason=reason" in fwd
+
+
 def test_the_reason_is_cleared_per_turn():
     """
     A sticky reason would label every later turn on the same satellite,

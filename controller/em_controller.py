@@ -83,6 +83,7 @@ import em_scenes
 import em_shadow
 import em_oww_warmup
 import em_barge
+import em_stopword
 import em_arbiter
 import em_button
 import em_tap_burst
@@ -580,6 +581,10 @@ class Device:
         )
         self.barge_threshold  = 0.6
         self.barge_detected   = False
+        # A dedicated stop classifier can end playback without re-entering a
+        # fresh turn. Kept separate from barge_detected because that flag's
+        # contract is specifically "open the mic and listen again".
+        self.stop_word_detected = False
         # Set when the interrupting utterance was arbitrated away to another
         # Echo. Separate from barge_detected because the two answer different
         # questions: barge_detected says playback must stop (the user spoke
@@ -1435,17 +1440,24 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
     HA pipeline is cancelled (local-only; any late HA result is discarded).
     """
     loop = asyncio.get_event_loop()
-    if device._barge_model is None or device._barge_model_key != device.oww_model:
+    stop_model_path = em_oww_models.models_dir(DB_PATH) / "stop.onnx"
+    stop_model = str(stop_model_path) if stop_model_path.is_file() else None
+    model_key = (device.oww_model, stop_model)
+    if device._barge_model is None or device._barge_model_key != model_key:
         name = device.oww_model
-        log.info(f"[{device.device_id}] Barge-in: loading watcher model {name}")
-        device._barge_model = await loop.run_in_executor(
-            None, lambda: OWWModel(wakeword_models=[name])
+        model_names = [name] + ([stop_model] if stop_model else [])
+        suffix = " + bare stop" if stop_model else ""
+        log.info(
+            f"[{device.device_id}] Barge-in: loading watcher model {name}{suffix}"
         )
-        device._barge_model_key = name
+        device._barge_model = await loop.run_in_executor(
+            None, lambda: OWWModel(wakeword_models=model_names)
+        )
+        device._barge_model_key = model_key
     model = device._barge_model
-    # _barge_model_key stays the raw owwModel value (staleness compare
-    # above); scoring needs the openwakeword prediction key (path → stem).
-    barge_pred_key = em_oww_models.prediction_key(device._barge_model_key)
+    # Scoring needs openwakeword's prediction key (custom path → stem).
+    barge_pred_key = em_oww_models.prediction_key(device.oww_model)
+    stop_pred_key = em_oww_models.prediction_key(stop_model) if stop_model else None
     model.reset()
     # reset() seeds the classifier's window with embeddings of random noise,
     # so the first FEATURE_WINDOW chunks score that noise as much as the room.
@@ -1473,6 +1485,7 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
     # normal wake threshold (see docstring).
     threshold = device.barge_threshold  # refined per-frame by phase below
     prev_score = 0.0  # previous frame's score — both phases need two
+    prev_stop_score = 0.0
     buf = bytearray()
     # Observability: the watcher used to log only on detection, which made a
     # failed barge-in attempt indistinguishable from "no frames arrived at
@@ -1493,6 +1506,7 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
             if payload is None or isinstance(payload, str):
                 buf.clear()
                 prev_score = 0.0  # sentinel = stream discontinuity; frames
+                prev_stop_score = 0.0
                 # across it are not consecutive for either two-frame rule
                 continue
             buf.extend(payload)
@@ -1505,9 +1519,39 @@ async def _barge_watcher(device: Device, playback_started: asyncio.Event):
                 rms_max  = max(rms_max, rms)
                 prediction = await loop.run_in_executor(None, model.predict, samples)
                 score = prediction.get(barge_pred_key, 0.0)
+                stop_score = prediction.get(stop_pred_key, 0.0) if stop_pred_key else 0.0
                 frames += 1
                 trusted = warmup.feed()
                 in_playback = playback_started.is_set()
+                # Bare "stop" is a kill word, not a wake word. It is armed
+                # only while audio is audible, and wins if both classifier
+                # heads cross on one frame so we never open a phantom turn.
+                stop_fired, stop_note = em_stopword.decide(
+                    score=stop_score,
+                    prev_score=prev_stop_score,
+                ) if in_playback and stop_pred_key else (False, "")
+                if stop_fired and trusted:
+                    log.info(
+                        f"[{device.device_id}] Stop word during playback "
+                        f"({stop_note}) — ending response"
+                    )
+                    db.log_device(
+                        device.device_id, "info", "device",
+                        f"Stop word during playback (score={stop_score:.3f})"
+                    )
+                    device.stop_word_detected = True
+                    device.cancel_event.set()
+                    await device.send_control({"type": "speaker_flush"})
+                    esphome.abort_ha_run(device.device_id, reason="stopped")
+                    return
+                if stop_fired and not trusted:
+                    log.info(
+                        f"[{device.device_id}] Stop word: {stop_note} ignored — "
+                        f"openwakeword warm-up, {warmup.progress()} chunks since reset"
+                    )
+                # An untrusted warm-up frame cannot serve as the first half
+                # of a later borderline confirmation.
+                prev_stop_score = stop_score if trusted else 0.0
                 # em_barge owns both phases. Extracted because this shipped
                 # untested and wrong: the playback branch fired on ONE frame
                 # at a bar ten times lower than the wake threshold, while
@@ -2426,6 +2470,15 @@ async def _run_voice_locked(device: Device, trigger_label: str = "unknown", is_w
                     # Fresh phase flag for the next turn's watcher.
                     playback_started = asyncio.Event()
                     continue
+
+                if device.stop_word_detected:
+                    # A stop word ends this interaction completely. Clear the
+                    # per-turn cancellation latch for the next ordinary wake,
+                    # but do not re-arm listening or start a continuation.
+                    device.stop_word_detected = False
+                    device.cancel_event.clear()
+                    log.info(f"[{device.device_id}] Stop word: response ended")
+                    break
 
                 if should_continue and not device.cancel_event.is_set():
                     log.info(f"[{device.device_id}] Continuing conversation (HA requested)")
