@@ -1395,6 +1395,17 @@ def test_entity_names_do_not_repeat_the_device_label():
         "the media player should take the device's own name"
 
 
+def test_timer_alarm_dismissal_is_exposed_as_an_ha_button():
+    """HA must be able to stop a completed timer that is ringing locally."""
+    src = (CONTROLLER / "em_esphome.py").read_text()
+
+    assert 'object_id="dismiss_timer_alarm"' in src
+    assert 'name="Dismiss Timer Alarm"' in src
+    assert "isinstance(msg, api_pb2.ButtonCommandRequest)" in src
+    assert "msg.key == DISMISS_TIMER_BUTTON_KEY" in src
+    assert "self._owning_server.dismiss_timer_alarm()" in src
+
+
 def test_asset_sync_does_not_shadow_its_accumulator():
     """
     _sync_oww_assets keeps a `pushed` list of installed asset names. Assigning
