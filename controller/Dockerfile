@@ -91,6 +91,7 @@ COPY em_hostip.py .
 COPY em_ingressauth.py .
 COPY em_linkauth.py .
 COPY em_pacing.py .
+COPY em_platform.py .
 COPY em_wsclose.py .
 COPY em_rttlog.py .
 COPY em_esphome.py .
@@ -98,12 +99,15 @@ COPY em_ble_health.py .
 COPY em_ble_proxy.py .
 COPY em_oww_assets.py  ./
 COPY em_oww_models.py .
+COPY em_oww_metadata.py .
 COPY em_oww_warmup.py .
 COPY em_arbiter.py .
 COPY em_button.py .
 COPY em_tap_burst.py .
 COPY em_player.py .
 COPY em_config_sections.py .
+COPY em_console_pw.py .
+COPY em_emos_build.py .
 COPY em_recordings.py .
 COPY em_turnclock.py .
 COPY em_firmware.py .
