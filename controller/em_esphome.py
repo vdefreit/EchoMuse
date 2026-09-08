@@ -230,6 +230,7 @@ MEDIA_PLAYER_KEY = 1
 # Append only.
 EVENT_KEY        = 2   # action-button hold, as an HA event entity
 AMBIENT_LUX_KEY  = 3   # TSL2540 ambient light, as an HA sensor
+DISMISS_TIMER_BUTTON_KEY = 4  # stop a locally ringing timer alarm
 
 # Press types the event entity advertises. double/triple were parked because
 # detecting them means delaying the single press by the multi-tap window to
@@ -578,6 +579,17 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                         **_fmt),
                 ],
             )
+            # A completed Assist timer no longer exists in HA, while its
+            # alarm keeps ringing locally on the Echo. Expose that local
+            # dismissal as a normal HA button so phone/watch notification
+            # actions can stop the sound through button.press.
+            yield api_pb2.ListEntitiesButtonResponse(
+                object_id="dismiss_timer_alarm",
+                key=DISMISS_TIMER_BUTTON_KEY,
+                name="Dismiss Timer Alarm",
+                icon="mdi:alarm-off",
+                entity_category=1,  # ENTITY_CATEGORY_CONFIG
+            )
             # Action button holds, as an event entity — it shows up in HA's
             # automation editor with the press type as a dropdown, rather
             # than needing a hand-written trigger on a raw esphome.* event.
@@ -726,6 +738,16 @@ class EchoMuseSatellite(SatelliteServerProtocol):
                 )
             else:
                 yield self._media_state_msg()
+            return
+
+        if isinstance(msg, api_pb2.ButtonCommandRequest):
+            if msg.key == DISMISS_TIMER_BUTTON_KEY and self._owning_server is not None:
+                log.info(
+                    f"[{self._log_name}] Dismiss Timer Alarm pressed from HA"
+                )
+                task = asyncio.create_task(self._owning_server.dismiss_timer_alarm())
+                task.add_done_callback(self._log_timer_task_error)
+            yield _HANDLED
             return
 
         if isinstance(msg, api_pb2.SubscribeHomeassistantServicesRequest):
